@@ -1,5 +1,0 @@
-[phases.install]
-cmds = ["pip install -r requirements_shark.txt"]
-
-[start]
-cmd = "python shark_panel_bot.py"
