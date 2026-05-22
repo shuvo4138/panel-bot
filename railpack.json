@@ -1,0 +1,8 @@
+{
+  "$schema": "https://schema.railpack.com",
+  "provider": "python",
+  "installCmd": "pip install -r requirements_shark",
+  "deploy": {
+    "startCommand": "python shark_panel_bot.py"
+  }
+}
