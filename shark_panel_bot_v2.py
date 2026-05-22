@@ -44,15 +44,15 @@ SUPABASE_TABLE = "shark_otps"
 #                    SESSION STATE
 # ══════════════════════════════════════════════════════════
 
-session_cookies: dict = {}        # {"PHPSESSID": "...", "sesskey": "..."}
-is_logged_in: bool = False        # True only when cookie is manually set & verified
+session_cookies: dict = {}
+is_logged_in: bool = False
 _seen_hashes: set = set()
 _bot_app: Application = None
 _poll_task: asyncio.Task = None
 _last_sms: dict = {}
 _total_collected: int = 0
 _poll_running: bool = False
-_waiting_cookie: dict = {}        # {chat_id: True} — tracks who is mid cookie-entry flow
+_waiting_cookie: dict = {}
 _settings: dict = {
     "poll_interval": POLL_INTERVAL,
     "notify_new_sms": True,
@@ -97,7 +97,7 @@ async def supabase_load_seen():
             for r in rows:
                 _seen_hashes.add(r["unique_id"])
             _total_collected = len(rows)
-            logger.info(f"✅ Loaded {len(rows)} existing OTP hashes from Supabase")
+            logger.info(f"Loaded {len(rows)} existing OTP hashes from Supabase")
     except Exception as e:
         logger.error(f"Supabase load_seen error: {e}")
 
@@ -140,32 +140,42 @@ async def supabase_last_sms() -> dict:
 # ══════════════════════════════════════════════════════════
 
 async def verify_cookie(phpsessid: str) -> bool:
-    """
-    Attempt a lightweight request to the panel using the supplied cookie.
-    Returns True if the response looks like an authenticated page.
-    """
+    """Test the cookie against the panel. Returns True if valid."""
     try:
-        cookies = {"PHPSESSID": phpsessid}
-        params = _make_poll_params()
+        bd_now = datetime.now(timezone(timedelta(hours=6)))
+        params = {
+            "fdate1": bd_now.strftime("%Y-%m-%d 00:00:00"),
+            "fdate2": bd_now.strftime("%Y-%m-%d 23:59:59"),
+            "frange": "", "fclient": "", "fnum": "",
+            "fcli": "", "fgdate": "", "fgmonth": "",
+            "fgrange": "", "fgclient": "", "fgnumber": "",
+            "fgcli": "", "fg": "0", "sesskey": "",
+            "sEcho": "1", "iColumns": "9",
+            "sColumns": ",,,,,,,,",
+            "iDisplayStart": "0", "iDisplayLength": "10",
+            "mDataProp_0": "0", "mDataProp_1": "1",
+            "mDataProp_2": "2", "mDataProp_3": "3",
+            "mDataProp_4": "4", "mDataProp_5": "5",
+            "mDataProp_6": "6", "mDataProp_7": "7",
+            "mDataProp_8": "8", "sSearch": "",
+            "bRegex": "false", "iSortCol_0": "0",
+            "sSortDir_0": "desc", "iSortingCols": "1",
+        }
         async with httpx.AsyncClient(
             timeout=15,
-            cookies=cookies,
+            cookies={"PHPSESSID": phpsessid},
             follow_redirects=False,
         ) as client:
             res = await client.get(
                 f"{SHARK_BASE_URL}/agent/res/data_smscdr.php",
                 params=params,
             )
-
-        # Redirect to signin → cookie invalid/expired
         if res.status_code in (301, 302):
             return False
         if "signin" in res.text.lower():
             return False
-        # Successful JSON response → cookie is valid
         data = res.json()
-        if "aaData" in data:
-            return True
+        return "aaData" in data
     except Exception as e:
         logger.error(f"Cookie verification error: {e}")
     return False
@@ -178,13 +188,13 @@ def _make_poll_params(fnum: str = "") -> dict:
     bd_now = datetime.now(timezone(timedelta(hours=6)))
     fdate1 = bd_now.strftime("%Y-%m-%d 00:00:00")
     fdate2 = bd_now.strftime("%Y-%m-%d 23:59:59")
-    sesskey = session_cookies.get("sesskey", "")
+    sesskey_val = session_cookies.get("sesskey", "")
     return {
         "fdate1": fdate1, "fdate2": fdate2,
         "frange": "", "fclient": "", "fnum": fnum,
         "fcli": "", "fgdate": "", "fgmonth": "",
         "fgrange": "", "fgclient": "", "fgnumber": "",
-        "fgcli": "", "fg": "0", "sesskey": sesskey,
+        "fgcli": "", "fg": "0", "sesskey": sesskey_val,
         "sEcho": "1", "iColumns": "9",
         "sColumns": ",,,,,,,,",
         "iDisplayStart": "0", "iDisplayLength": "100",
@@ -224,7 +234,7 @@ async def shark_fetch_otps(fnum: str = "") -> list:
             )
 
         if res.status_code in (301, 302) or "signin" in res.text.lower():
-            logger.warning("⚠️ Cookie expired or invalid!")
+            logger.warning("Cookie expired or invalid!")
             is_logged_in = False
             return []
 
@@ -258,19 +268,18 @@ async def shark_fetch_otps(fnum: str = "") -> list:
 async def poll_loop(bot: Bot):
     global is_logged_in, _last_sms, _total_collected, _poll_running
     _poll_running = True
-    logger.info("🔄 Poll loop started")
+    logger.info("Poll loop started")
 
     while True:
         try:
             if not is_logged_in:
-                # Paused — waiting for manual cookie
                 await asyncio.sleep(_settings["poll_interval"])
                 continue
 
             otps = await shark_fetch_otps()
 
             if not is_logged_in:
-                # Cookie was invalidated during fetch → alert admin
+                # Cookie invalidated during fetch
                 try:
                     await bot.send_message(
                         ADMIN_ID,
@@ -308,7 +317,7 @@ async def poll_loop(bot: Bot):
                 }
                 await supabase_insert(row)
                 new_count += 1
-                logger.info(f"✅ New OTP saved: {item['number']} → {item['otp']}")
+                logger.info(f"New OTP saved: {item['number']} -> {item['otp']}")
 
                 if _settings.get("notify_new_sms"):
                     try:
@@ -325,7 +334,7 @@ async def poll_loop(bot: Bot):
                         pass
 
             if new_count:
-                logger.info(f"📥 {new_count} new OTP(s) saved to Supabase")
+                logger.info(f"{new_count} new OTP(s) saved to Supabase")
 
         except asyncio.CancelledError:
             _poll_running = False
@@ -410,13 +419,9 @@ async def cmd_menu(update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def cmd_setcookie(update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /setcookie <PHPSESSID>
-    Optional second arg for sesskey: /setcookie <PHPSESSID> <sesskey>
-    """
+    global session_cookies, is_logged_in
     if not is_admin(update):
         return
-    global session_cookies, is_logged_in
 
     if not context.args:
         await update.message.reply_text(
@@ -439,15 +444,16 @@ async def cmd_setcookie(update, context: ContextTypes.DEFAULT_TYPE):
         session_cookies = {"PHPSESSID": phpsessid, "sesskey": new_sesskey}
         is_logged_in = True
         sid_display = f"`{phpsessid[:20]}...`" if len(phpsessid) > 20 else f"`{phpsessid}`"
+        sk_display = f"`{new_sesskey[:16]}...`" if len(new_sesskey) > 16 else f"`{new_sesskey or 'N/A'}`"
         await msg.edit_text(
             f"✅ *Cookie Set Successfully!*\n\n"
             f"🍪 PHPSESSID: {sid_display}\n"
-            f"🔑 Sesskey: `{new_sesskey[:16] + '...' if len(new_sesskey) > 16 else new_sesskey or 'N/A'}`\n\n"
+            f"🔑 Sesskey: {sk_display}\n\n"
             f"🟢 Polling চালু থাকবে এই cookie দিয়ে।",
             parse_mode="Markdown",
             reply_markup=main_menu_keyboard(),
         )
-        logger.info(f"✅ Cookie manually set and verified. PHPSESSID={phpsessid[:10]}...")
+        logger.info(f"Cookie manually set and verified. PHPSESSID={phpsessid[:10]}...")
     else:
         await msg.edit_text(
             "❌ *Cookie Invalid বা Expired!*\n\n"
@@ -459,9 +465,9 @@ async def cmd_setcookie(update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def cmd_clearcookie(update, context: ContextTypes.DEFAULT_TYPE):
+    global session_cookies, is_logged_in
     if not is_admin(update):
         return
-    global session_cookies, is_logged_in
     session_cookies = {}
     is_logged_in = False
     await update.message.reply_text(
@@ -471,21 +477,19 @@ async def cmd_clearcookie(update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ══════════════════════════════════════════════════════════
-#                    COOKIE ENTRY VIA PLAIN MESSAGE
-#   If admin sends a bare PHPSESSID-like string while
-#   _waiting_cookie flag is set (from button flow), handle it.
+#              PLAIN MESSAGE HANDLER (button cookie flow)
 # ══════════════════════════════════════════════════════════
 
 async def message_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    global session_cookies, is_logged_in
     if not is_admin(update):
         return
     chat_id = update.effective_chat.id
     text = (update.message.text or "").strip()
 
     if not _waiting_cookie.get(chat_id):
-        return  # not expecting a cookie
+        return
 
-    # Parse "PHPSESSID sesskey" or just "PHPSESSID"
     parts = text.split()
     phpsessid = parts[0]
     new_sesskey = parts[1] if len(parts) > 1 else ""
@@ -493,22 +497,22 @@ async def message_handler(update, context: ContextTypes.DEFAULT_TYPE):
     _waiting_cookie[chat_id] = False
 
     msg = await update.message.reply_text("🔍 Cookie verify করছি...")
-    global session_cookies, is_logged_in
 
     valid = await verify_cookie(phpsessid)
     if valid:
         session_cookies = {"PHPSESSID": phpsessid, "sesskey": new_sesskey}
         is_logged_in = True
         sid_display = f"`{phpsessid[:20]}...`" if len(phpsessid) > 20 else f"`{phpsessid}`"
+        sk_display = f"`{new_sesskey[:16]}...`" if len(new_sesskey) > 16 else f"`{new_sesskey or 'N/A'}`"
         await msg.edit_text(
             f"✅ *Cookie Set Successfully!*\n\n"
             f"🍪 PHPSESSID: {sid_display}\n"
-            f"🔑 Sesskey: `{new_sesskey[:16] + '...' if len(new_sesskey) > 16 else new_sesskey or 'N/A'}`\n\n"
+            f"🔑 Sesskey: {sk_display}\n\n"
             f"🟢 Polling চালু হয়েছে।",
             parse_mode="Markdown",
             reply_markup=main_menu_keyboard(),
         )
-        logger.info(f"✅ Cookie set via message flow. PHPSESSID={phpsessid[:10]}...")
+        logger.info(f"Cookie set via message flow. PHPSESSID={phpsessid[:10]}...")
     else:
         await msg.edit_text(
             "❌ *Cookie Invalid বা Expired!*\n\n"
@@ -518,10 +522,12 @@ async def message_handler(update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # ══════════════════════════════════════════════════════════
-#                    CALLBACK HANDLERS
+#                    CALLBACK HANDLER
 # ══════════════════════════════════════════════════════════
 
 async def callback_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    global session_cookies, is_logged_in, _poll_task, _poll_running
+
     query = update.callback_query
     if not query or query.from_user.id != ADMIN_ID:
         return
@@ -530,7 +536,6 @@ async def callback_handler(update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     chat_id = query.message.chat_id
 
-    # ── Panel Status ──────────────────────────────────────
     if data == "status":
         status_icon = "✅ Connected" if is_logged_in else "❌ No Cookie Set"
         poll_icon   = "🟢 Running"   if _poll_running  else "🔴 Stopped"
@@ -553,7 +558,6 @@ async def callback_handler(update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
 
-    # ── Set Cookie Prompt (button flow) ──────────────────
     elif data == "set_cookie_prompt":
         _waiting_cookie[chat_id] = True
         text = (
@@ -573,9 +577,7 @@ async def callback_handler(update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("◀️ Cancel", callback_data="back_main")]
         ]))
 
-    # ── Clear Cookie ──────────────────────────────────────
     elif data == "clear_cookie":
-        global session_cookies, is_logged_in
         session_cookies = {}
         is_logged_in = False
         _waiting_cookie[chat_id] = False
@@ -586,9 +588,7 @@ async def callback_handler(update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=main_menu_keyboard(),
         )
 
-    # ── Restart Polling ───────────────────────────────────
     elif data == "restart_poll":
-        global _poll_task, _poll_running
         if not is_logged_in:
             await query.answer("⚠️ আগে cookie সেট করো!", show_alert=True)
             return
@@ -613,7 +613,6 @@ async def callback_handler(update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=main_menu_keyboard(),
         )
 
-    # ── Last SMS ──────────────────────────────────────────
     elif data == "last_sms":
         record = _last_sms if _last_sms else await supabase_last_sms()
         if record:
@@ -629,7 +628,6 @@ async def callback_handler(update, context: ContextTypes.DEFAULT_TYPE):
             text = "📨 *Last SMS*\n\nএখনো কোনো SMS collect হয়নি।"
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
 
-    # ── SMS Count ─────────────────────────────────────────
     elif data == "sms_count":
         await query.edit_message_text("📊 Supabase থেকে count আনছি...", parse_mode="Markdown")
         total = await supabase_count()
@@ -641,7 +639,6 @@ async def callback_handler(update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
 
-    # ── Settings ──────────────────────────────────────────
     elif data == "settings":
         notify_status = "ON 🔔" if _settings["notify_new_sms"] else "OFF 🔕"
         text = (
@@ -652,7 +649,6 @@ async def callback_handler(update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=settings_keyboard())
 
-    # ── Toggle Notify ─────────────────────────────────────
     elif data == "toggle_notify":
         _settings["notify_new_sms"] = not _settings["notify_new_sms"]
         notify_status = "ON 🔔" if _settings["notify_new_sms"] else "OFF 🔕"
@@ -663,7 +659,6 @@ async def callback_handler(update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=settings_keyboard())
 
-    # ── Interval Change ───────────────────────────────────
     elif data in ("interval_5", "interval_10", "interval_30"):
         val = int(data.split("_")[1])
         _settings["poll_interval"] = val
@@ -674,7 +669,6 @@ async def callback_handler(update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=settings_keyboard())
 
-    # ── Back to Main ──────────────────────────────────────
     elif data == "back_main":
         _waiting_cookie[chat_id] = False
         await query.edit_message_text(
@@ -690,12 +684,12 @@ async def callback_handler(update, context: ContextTypes.DEFAULT_TYPE):
 async def post_init(app: Application):
     global _bot_app, _poll_task
     _bot_app = app
-    logger.info("🚀 Shark Panel Bot starting...")
+    logger.info("Shark Panel Bot starting...")
 
     try:
         await supabase_load_seen()
         _poll_task = app.create_task(poll_loop(app.bot), name="shark_poll_loop")
-        logger.info("✅ Shark Panel Bot ready!")
+        logger.info("Shark Panel Bot ready!")
 
         await app.bot.send_message(
             ADMIN_ID,
@@ -712,7 +706,7 @@ async def post_init(app: Application):
 
 async def post_shutdown(app: Application):
     global _poll_task, _poll_running
-    logger.info("🛑 Shark Panel Bot shutting down...")
+    logger.info("Shark Panel Bot shutting down...")
     _poll_running = False
     if _poll_task:
         _poll_task.cancel()
@@ -720,7 +714,7 @@ async def post_shutdown(app: Application):
             await _poll_task
         except asyncio.CancelledError:
             logger.info("Poll task cancelled")
-    logger.info("✅ Shark Panel Bot shutdown complete.")
+    logger.info("Shark Panel Bot shutdown complete.")
 
 # ══════════════════════════════════════════════════════════
 #                    MAIN
@@ -741,10 +735,9 @@ def main():
         app.add_handler(CommandHandler("setcookie",   cmd_setcookie))
         app.add_handler(CommandHandler("clearcookie", cmd_clearcookie))
         app.add_handler(CallbackQueryHandler(callback_handler))
-        # Plain-message handler for button-flow cookie entry (lowest priority)
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
-        logger.info("🦈 Shark Panel Bot starting polling...")
+        logger.info("Shark Panel Bot starting polling...")
         app.run_polling(
             drop_pending_updates=True,
             timeout=30,
