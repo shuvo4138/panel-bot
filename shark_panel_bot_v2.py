@@ -170,12 +170,24 @@ async def verify_cookie(phpsessid: str) -> bool:
                 f"{SHARK_BASE_URL}/agent/res/data_smscdr.php",
                 params=params,
             )
+
         if res.status_code in (301, 302):
             return False
-        if "signin" in res.text.lower():
+
+        text = res.text.strip()
+        if not text:
             return False
-        data = res.json()
-        return "aaData" in data
+        if "signin" in text.lower():
+            return False
+
+        # JSON parse try করো
+        try:
+            data = res.json()
+            return "aaData" in data
+        except Exception:
+            # JSON না হলে invalid
+            return False
+
     except Exception as e:
         logger.error(f"Cookie verification error: {e}")
     return False
