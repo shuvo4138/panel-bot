@@ -1,5 +1,5 @@
-[phases.install]
-cmds = ["pip install -r requirements_shark.txt"]
+[phases.setup]
+nixPkgs = ["python311"]
 
 [start]
 cmd = "python shark_panel_bot.py"
