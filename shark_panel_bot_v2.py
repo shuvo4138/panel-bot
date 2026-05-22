@@ -4,16 +4,13 @@ import os
 import re
 import hashlib
 from datetime import datetime, timezone, timedelta
+from dotenv import load_dotenv
 import httpx
 from bs4 import BeautifulSoup
 from telegram import Bot
-from telegram.ext import (
-    ApplicationBuilder, 
-    CommandHandler, 
-    ContextTypes, 
-    Application,
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, Application
 
+load_dotenv()
 
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -50,7 +47,6 @@ sesskey: str = ""                   # base64 sesskey from panel
 is_logged_in: bool = False
 _seen_hashes: set = set()           # dedup cache
 _bot_app: Application = None        # filled in main()
-_poll_task: asyncio.Task = None     # track poll loop task
 
 # ══════════════════════════════════════════════════════════
 #                    SUPABASE HELPERS
@@ -101,7 +97,20 @@ async def supabase_load_seen():
 # ══════════════════════════════════════════════════════════
 
 def _solve_math_captcha(question: str) -> int:
-    """Parse 'What is X + Y = ?' and return answer."""
+    """Parse math captcha like 'What is X + Y = ?' and return answer."""
+    # Match: number, operator, number
+    match = re.search(r"(\d+)\s*([+\-\*x×])\s*(\d+)", question)
+    if match:
+        a = int(match.group(1))
+        op = match.group(2)
+        b = int(match.group(3))
+        if op == "+":
+            return a + b
+        elif op == "-":
+            return a - b
+        elif op in ("*", "x", "×"):
+            return a * b
+    # Fallback: just sum all digits found
     nums = re.findall(r"\d+", question)
     if len(nums) >= 2:
         return int(nums[0]) + int(nums[1])
@@ -116,11 +125,19 @@ async def shark_login() -> bool:
             res = await client.get(f"{SHARK_BASE_URL}/signin")
             soup = BeautifulSoup(res.text, "html.parser")
 
-            # Find captcha question e.g. "What is 4 + 7 = ?"
-            capt_div = soup.find("div", class_="wrap-input100")
+            # Find captcha question - search entire page
             capt_text = ""
-            if capt_div:
-                capt_text = capt_div.get_text()
+            # Try common captcha patterns
+            for tag in soup.find_all(["label", "div", "span", "p"]):
+                text = tag.get_text()
+                if re.search(r"\d+\s*[+\-\*x×]\s*\d+", text):
+                    capt_text = text
+                    break
+            # Fallback: search raw HTML
+            if not capt_text:
+                raw_match = re.search(r"(\d+\s*[+\-\*x×]\s*\d+)", res.text)
+                if raw_match:
+                    capt_text = raw_match.group(1)
             capt_answer = _solve_math_captcha(capt_text)
             logger.info(f"Captcha: '{capt_text.strip()}' → answer: {capt_answer}")
 
@@ -396,75 +413,44 @@ async def cmd_setsession(update, context: ContextTypes.DEFAULT_TYPE):
 # ══════════════════════════════════════════════════════════
 
 async def post_init(app: Application):
-    """Called after app is initialized. Start background tasks here."""
-    global _bot_app, _poll_task
+    global _bot_app
     _bot_app = app
     logger.info("🚀 Shark Panel Bot starting...")
 
-    try:
-        # Load seen hashes
-        await supabase_load_seen()
+    # Load seen hashes
+    await supabase_load_seen()
 
-        # Login
-        success = await shark_login()
-        if not success:
-            logger.error("Initial login failed, will retry in background")
+    # Login
+    await shark_login()
 
-        # Start poll loop as background task using app.create_task
-        _poll_task = app.create_task(poll_loop(app.bot), name="shark_poll_loop")
-        logger.info("✅ Shark Panel Bot ready!")
-        
-    except Exception as e:
-        logger.error(f"Error during post_init: {e}", exc_info=True)
+    # Start poll loop as background task
+    asyncio.create_task(poll_loop(app.bot))
+
+    logger.info("✅ Shark Panel Bot ready!")
 
 async def post_shutdown(app: Application):
-    """Called during shutdown - cleanup tasks."""
-    global _poll_task
-    logger.info("🛑 Shark Panel Bot shutting down...")
-    
-    if _poll_task:
-        _poll_task.cancel()
-        try:
-            await _poll_task
-        except asyncio.CancelledError:
-            logger.info("Poll task cancelled")
-    
-    logger.info("✅ Shark Panel Bot shutdown complete.")
+    logger.info("✅ Shark Panel Bot shutdown.")
 
 # ══════════════════════════════════════════════════════════
 #                    MAIN
 # ══════════════════════════════════════════════════════════
 
 def main():
-    """Main entry point."""
-    try:
-        # Build application with proper error handling
-        app = (
-            ApplicationBuilder()
-            .token(BOT_TOKEN)
-            .post_init(post_init)
-            .post_shutdown(post_shutdown)
-            .build()
-        )
+    app = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
+    )
 
-        # Add command handlers
-        app.add_handler(CommandHandler("start", cmd_start))
-        app.add_handler(CommandHandler("status", cmd_status))
-        app.add_handler(CommandHandler("relogin", cmd_relogin))
-        app.add_handler(CommandHandler("setsession", cmd_setsession))
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("relogin", cmd_relogin))
+    app.add_handler(CommandHandler("setsession", cmd_setsession))
 
-        logger.info("🦈 Shark Panel Bot starting polling...")
-        
-        # Run the bot with proper error handling
-        app.run_polling(
-            drop_pending_updates=True,
-            timeout=30,
-            allowed_updates=["message", "callback_query"]
-        )
-        
-    except Exception as e:
-        logger.error(f"Fatal error in main: {e}", exc_info=True)
-        raise
+    logger.info("🦈 Shark Panel Bot running...")
+    app.run_polling(drop_pending_updates=True, timeout=30)
 
 if __name__ == "__main__":
     main()
