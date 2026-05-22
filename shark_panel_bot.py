@@ -4,13 +4,11 @@ import os
 import re
 import hashlib
 from datetime import datetime, timezone, timedelta
-from dotenv import load_dotenv
 import httpx
 from bs4 import BeautifulSoup
 from telegram import Bot
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, Application
 
-load_dotenv()
 
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
