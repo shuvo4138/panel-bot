@@ -291,7 +291,8 @@ async def shark_fetch_otps(fnum: str = "") -> list:
             return []
 
         if not res.text.strip() or res.text.strip()[0] not in ('{', '['):
-            logger.error(f"Non-JSON response: {res.text[:200]}")
+            logger.warning(f"Non-JSON response (session likely expired): {res.text[:100]}")
+            is_logged_in = False
             return []
 
         data = res.json()
@@ -421,7 +422,7 @@ async def poll_loop(bot: Bot):
                     "message":    item["message"],
                     "app":        item["app"],
                     "dt":         item["dt"],
-                    "created_at": datetime.utcnow().isoformat(),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
                 }
                 await supabase_insert(row)
                 new_count += 1
