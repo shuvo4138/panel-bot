@@ -57,7 +57,6 @@ _poll_running: bool = False
 _waiting_cookie: dict = {}
 _settings: dict = {
     "poll_interval": POLL_INTERVAL,
-    "notify_new_sms": True,
 }
 
 # ══════════════════════════════════════════════════════════
@@ -351,7 +350,6 @@ async def poll_loop(bot: Bot):
     _poll_running = True
     _ping_counter = 0
     _relogin_attempts = 0
-    _empty_count = 0  # কতবার consecutive empty fetch হলো
     KEEPALIVE_EVERY = max(1, 60 // max(_settings["poll_interval"], 1))  # প্রতি ~60 সেকেন্ডে ping
     logger.info("Poll loop started")
 
@@ -392,8 +390,7 @@ async def poll_loop(bot: Bot):
             otps = await shark_fetch_otps()
 
             if not is_logged_in:
-                # Cookie expire হয়ে গেছে — পরের cycle এ re-login হবে
-                _empty_count = 0
+                # Cookie expire হয়ে গেছে (shark_fetch_otps এ detect হয়েছে) — সাথে সাথে re-login
                 try:
                     await bot.send_message(
                         ADMIN_ID,
@@ -404,27 +401,6 @@ async def poll_loop(bot: Bot):
                     pass
                 await asyncio.sleep(_settings["poll_interval"])
                 continue
-
-            # Consecutive empty fetch হলে force re-login
-            if not otps:
-                _empty_count += 1
-                logger.info(f"Empty fetch #{_empty_count}")
-                if _empty_count >= 8:  # ৮ বার empty = সম্ভবত session dead
-                    logger.warning("Too many empty fetches — forcing re-login!")
-                    is_logged_in = False
-                    _empty_count = 0
-                    try:
-                        await bot.send_message(
-                            ADMIN_ID,
-                            "⚠️ *Session Timeout সন্দেহ!*\n\nঅনেকক্ষণ OTP আসছে না — Auto re-login করছি...",
-                            parse_mode="Markdown",
-                        )
-                    except Exception:
-                        pass
-                    await asyncio.sleep(_settings["poll_interval"])
-                    continue
-            else:
-                _empty_count = 0  # OTP পেলে counter reset
 
             new_count = 0
             for item in otps:
@@ -450,20 +426,6 @@ async def poll_loop(bot: Bot):
                 await supabase_insert(row)
                 new_count += 1
                 logger.info(f"New OTP saved: {item['number']} -> {item['otp']}")
-
-                if _settings.get("notify_new_sms"):
-                    try:
-                        notif = (
-                            f"📨 *New SMS Collected*\n\n"
-                            f"📱 Number: `{item['number']}`\n"
-                            f"🔑 OTP: `{item['otp'] or 'N/A'}`\n"
-                            f"📦 App: {item['app'] or 'Unknown'}\n"
-                            f"💬 Message: {item['message'][:100]}\n"
-                            f"🕐 Time: {item['dt']}"
-                        )
-                        await bot.send_message(ADMIN_ID, notif, parse_mode="Markdown")
-                    except Exception:
-                        pass
 
             if new_count:
                 logger.info(f"{new_count} new OTP(s) saved to Supabase")
@@ -503,9 +465,7 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 def settings_keyboard() -> InlineKeyboardMarkup:
-    notify_label = "🔔 Notify: ON" if _settings["notify_new_sms"] else "🔕 Notify: OFF"
     keyboard = [
-        [InlineKeyboardButton(notify_label, callback_data="toggle_notify")],
         [
             InlineKeyboardButton("⏱ 5s",  callback_data="interval_5"),
             InlineKeyboardButton("⏱ 10s", callback_data="interval_10"),
@@ -714,22 +674,10 @@ async def callback_handler(update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
 
     elif data == "settings":
-        notify_status = "ON 🔔" if _settings["notify_new_sms"] else "OFF 🔕"
         text = (
             f"⚙️ *Settings*\n\n"
-            f"🔔 New SMS Notify: *{notify_status}*\n"
             f"⏱ Poll Interval: *{_settings['poll_interval']}s*\n\n"
             f"নিচে পরিবর্তন করো 👇"
-        )
-        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=settings_keyboard())
-
-    elif data == "toggle_notify":
-        _settings["notify_new_sms"] = not _settings["notify_new_sms"]
-        notify_status = "ON 🔔" if _settings["notify_new_sms"] else "OFF 🔕"
-        text = (
-            f"⚙️ *Settings*\n\n"
-            f"🔔 New SMS Notify: *{notify_status}*\n"
-            f"⏱ Poll Interval: *{_settings['poll_interval']}s*"
         )
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=settings_keyboard())
 
@@ -738,7 +686,6 @@ async def callback_handler(update, context: ContextTypes.DEFAULT_TYPE):
         _settings["poll_interval"] = val
         text = (
             f"⚙️ *Settings*\n\n"
-            f"🔔 New SMS Notify: *{'ON 🔔' if _settings['notify_new_sms'] else 'OFF 🔕'}*\n"
             f"⏱ Poll Interval: *{val}s* ✅"
         )
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=settings_keyboard())
